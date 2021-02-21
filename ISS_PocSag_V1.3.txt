@@ -1,0 +1,243 @@
+Mise en place de ISS POCSAG
+###########################
+
+pi-star@pistar-usb:bin$ sudo apt-get install jq
+Reading package lists... Done
+Building dependency tree
+Reading state information... Done
+The following NEW packages will be installed:
+  jq
+0 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.
+Need to get 97.2 kB of archives.
+After this operation, 237 kB of additional disk space will be used.
+Get:1 http://mirrordirector.raspbian.org/raspbian/ jessie/main jq armhf 1.4-2.1+deb8u1 [97.2 kB]
+Fetched 97.2 kB in 0s (142 kB/s)
+Selecting previously unselected package jq.
+(Reading database ... 37950 files and directories currently installed.)
+Preparing to unpack .../jq_1.4-2.1+deb8u1_armhf.deb ...
+Unpacking jq (1.4-2.1+deb8u1) ...
+Processing triggers for man-db (2.7.5-1~bpo8+1) ...
+Setting up jq (1.4-2.1+deb8u1) ...
+pi-star@pistar-usb:bin$
+
+==========================================
+
+pi-star@pistar-usb:bin$ sudo vi /usr/local/bin/distance.c
+
+#include <stdio.h>
+#include <math.h>
+#include <stdlib.h>
+
+#define EARTH_RADIUS (6371.0072 * 0.6214)
+#define TORADS(degrees) (degrees * (M_PI / 180))
+
+main(int argc, char **argv)
+{
+
+double lat1, long1, lat2, long2;
+double dLat, dLong, a, c, d;
+
+lat1 = TORADS(atof(argv[1]));
+long1 = TORADS(atof(argv[2]));
+lat2 = TORADS(atof(argv[3]));
+long2 = TORADS(atof(argv[4]));
+
+dLat = lat2 - lat1;
+dLong = long2 - long1;
+
+a = sin(dLat/2) * sin(dLat/2) +
+cos(lat1) * cos(lat2) * sin(dLong/2) * sin(dLong/2);
+c = 2 * atan2(sqrt(a), sqrt(1-a));
+
+printf("%g\n", EARTH_RADIUS * c);
+}
+
+============================================
+Compilation avec gcc
+gcc /usr/local/bin/distance.c -o /usr/local/bin/distance -lm
+
+sudo chmod 755 /usr/local/bin/distance
+
+============================================
+Création du script de lancement iss_pocsag_f1ptl.sh
+(Changement : CALLSIGN, MyLat, MyLong et Kilometrage defaut 500) 
+
+pi-star@pistar-usb:bin$ sudo vi /usr/local/bin/iss_pocsag_f1ptl.sh
+
+#!/bin/bash
+CALLSIGN=f1ptl
+issLat=`curl -s -H "Content-Type: application/json" -X GET http://api.open-notify.org/iss-now.json | jq -r [.iss_position] | sed -n -e 's/^.*"latitude": //p' | sed "s/\"//g" | sed "s/\,//g"`
+issLong=`curl -s -H "Content-Type: application/json" -X GET http://api.open-notify.org/iss-now.json | jq -r [.iss_position] | sed -n -e 's/^.*"longitude": //p' | sed "s/\"//g" | sed "s/\,//g"`
+
+MyLat=48.867106
+MyLong=2.181340
+
+echo "My Location : $MyLat, $MyLong"
+echo "ISS Location : $issLat, $issLong"
+now=`date +"%d-%m-%Y %r"`
+
+distance=`/usr/local/bin/distance $issLat $issLong $MyLat $MyLong `
+
+if (( ${distance%.*} <= 500 )); then
+echo "${now} ISS is approaching ${distance}KM"
+/usr/local/sbin/pistar-dapnetapi ${CALLSIGN} "${now} ISS is approaching ${distance}KM" debug
+else
+echo "${now} Distance is ${distance}KM, it is more than 500KM"
+fi
+
+============================================
+Positionner les droits du script
+sudo chmod 755 /usr/local/bin/iss_pocsag_f1ptl.sh
+
+============================================
+Sur la PI-Star mode expert
+Mise en place DAPNET API sur la PI-Star
+
+============================================
+
+lancement toutes les 5 minutes du script iss_pocsag_f1ptl.sh
+
+sudo crontab -e
+*/5 * * * * /usr/local/bin/iss_pocsag_f1ptl.sh > /dev/null 2>&1
+
+============================================
+
+Modification F1PTL pour avoir des logs des passages
+###################################################
+
+Modification du fichier : iss_pocsag_f1ptl.sh
+#!/bin/bash
+#
+# Modification : 16/09/2018 Version 1.3
+# Ajout variable Votre_DAPNET  oui/non par defaut = non
+# Modification de la variable Votre_Mail  oui/non par defaut = non
+#
+# Modification : 15/09/2018 Version 1.2
+# Date et heure FR
+# Variables deplacees en haut du script
+# Ajout variable dist_km
+# Ajout variable Votre_Mail : Il faut avoir configurer les mails sur votre Linux: oui/non par defaut = non
+#
+# Variables a modifier
+##############################
+CALLSIGN=f1ptl
+ID_DMR=XXXXXXX
+MyLat=48.867106
+MyLong=2.181340
+Votre_DAPNET=non
+Dist_Km="1600"
+Votre_Mail=non
+##############################
+
+# Recuperation des informations Latitude et Longitude ISS
+#========================================================
+issLat=`curl -s -H "Content-Type: application/json" -X GET http://api.open-notify.org/iss-now.json | jq -r [.iss_position] | sed -n -e 's/^.*"latitude": //p' | sed "s/\"//g" | sed "s/\,//g"`
+issLong=`curl -s -H "Content-Type: application/json" -X GET http://api.open-notify.org/iss-now.json | jq -r [.iss_position] | sed -n -e 's/^.*"longitude": //p' | sed "s/\"//g" | sed "s/\,//g"`
+
+# Informations station radio
+#===========================
+echo "My Location : $MyLat, $MyLong"
+echo "ISS Location : $issLat, $issLong"
+now=`date +"%d-%m-%Y %R"`
+
+# Logs ISS
+#=========
+iss_log="/var/log/iss_distance.log"
+
+# Calcule de la distance en KM entre vous et ISS
+#===============================================
+distance=`/usr/local/bin/distance $issLat $issLong $MyLat $MyLong `
+
+# Affichage et publication des informations
+#==========================================
+if [ ${distance%.*} -lt ${Dist_Km} ]; then
+   echo "${now} : ISS en approche ${distance}KM" >> ${iss_log}
+
+        if [ ${Votre_Mail} = "non" ] ; then
+           echo "Pas de Mail"
+           else
+           echo "${now} : ISS en approche ${distance}KM" | mail -s "ISS-Approche" ${Votre_Mail}
+        fi
+
+        if [ ${Votre_DAPNET} = "non" ] ; then
+           echo "Pas de DAPNET"
+           else
+           /usr/local/sbin/pistar-dapnetapi ${CALLSIGN} "ISS en approche ${distance}KM" debug
+        fi
+   else
+   echo "${now} : ISS est a ${distance}KM de votre position (${CALLSIGN})" >> ${iss_log}
+fi
+
+
+============================================
+
+Mise en place de la rotation des logs pour ISS
+##############################################
+
+Modification du fichier : /etc/logrotate.conf
+
+# Rotation des logs pour ISS
+/var/log/iss_distance.log {
+    missingok
+    daily
+    compress
+    create 0660 root root
+    rotate 2
+}
+
+============================================
+
+Verification de la rotation des logs pour ISS
+#############################################
+
+sudo logrotate /etc/logrotate.conf
+
+cat /var/lib/logrotate/status
+
+logrotate state -- version 2
+"/var/log/nginx/error.log" 2018-9-14-0:21:0
+"/var/log/syslog" 2018-9-14-0:21:0
+.....
+"/var/log/iss_distance.log" 2018-9-14-7:0:0   <==== Voici la ligne a vérifier ===========
+.....
+
+
+more /var/log/iss_distance.log
+09-14-2018  7:55:02 am CEST : La distance de ISS est de 7061.37 KM
+09-14-2018  8:00:02 am CEST : La distance de ISS est de 8324.43 KM
+
+============================================
+
+Mise en place d'un mail sur le RaspBerry
+########################################
+
+sudo apt-get install mailutils mpack
+sudo apt-get install heirloom-mailx
+sudo apt-get install ssmtp
+
+Modification du fichier : sudo nano /etc/ssmtp/ssmtp.conf
+root=f1zlk.jn18cu@gmail.com
+mailhub=smtp.gmail.com:587
+hostname=pistar-usb
+AuthUser=f1zlk.jn18cu@gmail.com
+AuthPass=XXXXXXXX
+FromLineOverride=YES
+UseSTARTTLS=YES
+
+
+Sur la PI-Star ouvrir le port de com 587
+Création d'un fichier /root/ipv4.fw
+
+# Port TCP pour la messagerie SSMTP
+iptables -t filter -A INPUT -p tcp --dport 587 -j ACCEPT
+iptables -t filter -A OUTPUT -p tcp --dport 587 -j ACCEPT
+
+chmod 644 /root/ipv4.fw
+
+
+Test d'un message a ff1ptl@gmail.com
+echo "ISS est en approche de votre position" | mail -s "ISS-Distance" ff1ptl@gmail.com
+
+============================================
+
+Fin
